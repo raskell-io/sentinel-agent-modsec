@@ -16,8 +16,7 @@ use tempfile::tempdir;
 
 /// Check if CRS is available
 fn crs_available() -> bool {
-    Path::new("testdata/crs/crs-setup.conf").exists()
-        && Path::new("testdata/crs/rules").is_dir()
+    Path::new("testdata/crs/crs-setup.conf").exists() && Path::new("testdata/crs/rules").is_dir()
 }
 
 /// Get CRS rules paths
@@ -148,7 +147,10 @@ async fn test_crs_sqli_union_select() {
         .expect("Failed to send event");
 
     println!("CRS SQLi UNION SELECT - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block UNION SELECT injection");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block UNION SELECT injection"
+    );
 }
 
 #[tokio::test]
@@ -166,18 +168,17 @@ async fn test_crs_sqli_boolean_based() {
     let mut client = create_client(&socket_path).await;
 
     // Boolean-based blind SQL injection
-    let event = make_request_headers(
-        "GET",
-        "/user?id=1' AND '1'='1",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/user?id=1' AND '1'='1", HashMap::new());
     let response = client
         .send_event(EventType::RequestHeaders, &event)
         .await
         .expect("Failed to send event");
 
     println!("CRS SQLi Boolean - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block boolean-based SQLi");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block boolean-based SQLi"
+    );
 }
 
 #[tokio::test]
@@ -195,18 +196,17 @@ async fn test_crs_sqli_time_based() {
     let mut client = create_client(&socket_path).await;
 
     // Time-based blind SQL injection
-    let event = make_request_headers(
-        "GET",
-        "/api?id=1; WAITFOR DELAY '0:0:5'--",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/api?id=1; WAITFOR DELAY '0:0:5'--", HashMap::new());
     let response = client
         .send_event(EventType::RequestHeaders, &event)
         .await
         .expect("Failed to send event");
 
     println!("CRS SQLi Time-based - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block time-based SQLi");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block time-based SQLi"
+    );
 }
 
 // ============================================================================
@@ -238,7 +238,10 @@ async fn test_crs_xss_script_tag() {
         .expect("Failed to send event");
 
     println!("CRS XSS Script Tag - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block script tag XSS");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block script tag XSS"
+    );
 }
 
 #[tokio::test]
@@ -266,7 +269,10 @@ async fn test_crs_xss_event_handler() {
         .expect("Failed to send event");
 
     println!("CRS XSS Event Handler - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block event handler XSS");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block event handler XSS"
+    );
 }
 
 #[tokio::test]
@@ -283,18 +289,17 @@ async fn test_crs_xss_svg_onload() {
 
     let mut client = create_client(&socket_path).await;
 
-    let event = make_request_headers(
-        "GET",
-        "/page?data=<svg onload=alert(1)>",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/page?data=<svg onload=alert(1)>", HashMap::new());
     let response = client
         .send_event(EventType::RequestHeaders, &event)
         .await
         .expect("Failed to send event");
 
     println!("CRS XSS SVG Onload - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block SVG onload XSS");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block SVG onload XSS"
+    );
 }
 
 // ============================================================================
@@ -315,18 +320,17 @@ async fn test_crs_path_traversal_etc_passwd() {
 
     let mut client = create_client(&socket_path).await;
 
-    let event = make_request_headers(
-        "GET",
-        "/download?file=../../../etc/passwd",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/download?file=../../../etc/passwd", HashMap::new());
     let response = client
         .send_event(EventType::RequestHeaders, &event)
         .await
         .expect("Failed to send event");
 
     println!("CRS Path Traversal - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block path traversal");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block path traversal"
+    );
 }
 
 #[tokio::test]
@@ -353,8 +357,14 @@ async fn test_crs_path_traversal_windows() {
         .await
         .expect("Failed to send event");
 
-    println!("CRS Windows Path Traversal - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block Windows path traversal");
+    println!(
+        "CRS Windows Path Traversal - Decision: {:?}",
+        response.decision
+    );
+    assert!(
+        is_block(&response.decision),
+        "CRS should block Windows path traversal"
+    );
 }
 
 // ============================================================================
@@ -385,8 +395,14 @@ async fn test_crs_command_injection_semicolon() {
         .await
         .expect("Failed to send event");
 
-    println!("CRS Command Injection Semicolon - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block command injection with semicolon");
+    println!(
+        "CRS Command Injection Semicolon - Decision: {:?}",
+        response.decision
+    );
+    assert!(
+        is_block(&response.decision),
+        "CRS should block command injection with semicolon"
+    );
 }
 
 #[tokio::test]
@@ -403,18 +419,20 @@ async fn test_crs_command_injection_backticks() {
 
     let mut client = create_client(&socket_path).await;
 
-    let event = make_request_headers(
-        "GET",
-        "/run?cmd=`id`",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/run?cmd=`id`", HashMap::new());
     let response = client
         .send_event(EventType::RequestHeaders, &event)
         .await
         .expect("Failed to send event");
 
-    println!("CRS Command Injection Backticks - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block command injection with backticks");
+    println!(
+        "CRS Command Injection Backticks - Decision: {:?}",
+        response.decision
+    );
+    assert!(
+        is_block(&response.decision),
+        "CRS should block command injection with backticks"
+    );
 }
 
 #[tokio::test]
@@ -431,18 +449,20 @@ async fn test_crs_command_injection_pipe() {
 
     let mut client = create_client(&socket_path).await;
 
-    let event = make_request_headers(
-        "GET",
-        "/exec?input=test | whoami",
-        HashMap::new(),
-    );
+    let event = make_request_headers("GET", "/exec?input=test | whoami", HashMap::new());
     let response = client
         .send_event(EventType::RequestHeaders, &event)
         .await
         .expect("Failed to send event");
 
-    println!("CRS Command Injection Pipe - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block command injection with pipe");
+    println!(
+        "CRS Command Injection Pipe - Decision: {:?}",
+        response.decision
+    );
+    assert!(
+        is_block(&response.decision),
+        "CRS should block command injection with pipe"
+    );
 }
 
 // ============================================================================
@@ -476,7 +496,10 @@ async fn test_crs_scanner_sqlmap() {
         .expect("Failed to send event");
 
     println!("CRS Scanner sqlmap - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block sqlmap scanner");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block sqlmap scanner"
+    );
 }
 
 #[tokio::test]
@@ -506,7 +529,10 @@ async fn test_crs_scanner_nikto() {
         .expect("Failed to send event");
 
     println!("CRS Scanner Nikto - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block Nikto scanner");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block Nikto scanner"
+    );
 }
 
 // ============================================================================
@@ -582,7 +608,10 @@ async fn test_crs_sqli_in_json_body() {
         .expect("Failed to send body");
 
     println!("CRS SQLi in JSON Body - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block SQLi in JSON body");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block SQLi in JSON body"
+    );
 }
 
 #[tokio::test]
@@ -620,7 +649,10 @@ async fn test_crs_xss_in_form_body() {
         .expect("Failed to send body");
 
     println!("CRS XSS in Form Body - Decision: {:?}", response.decision);
-    assert!(is_block(&response.decision), "CRS should block XSS in form body");
+    assert!(
+        is_block(&response.decision),
+        "CRS should block XSS in form body"
+    );
 }
 
 // ============================================================================
@@ -655,7 +687,10 @@ async fn test_crs_clean_get_request() {
         .expect("Failed to send event");
 
     println!("CRS Clean GET - Decision: {:?}", response.decision);
-    assert!(is_allow(&response.decision), "CRS should allow clean GET request");
+    assert!(
+        is_allow(&response.decision),
+        "CRS should allow clean GET request"
+    );
 }
 
 #[tokio::test]
@@ -678,10 +713,7 @@ async fn test_crs_clean_post_request() {
         "Content-Type".to_string(),
         vec!["application/json".to_string()],
     );
-    headers.insert(
-        "User-Agent".to_string(),
-        vec!["Mozilla/5.0".to_string()],
-    );
+    headers.insert("User-Agent".to_string(), vec!["Mozilla/5.0".to_string()]);
 
     let headers_event = make_request_headers("POST", "/api/users", headers);
     let _ = client
@@ -697,7 +729,10 @@ async fn test_crs_clean_post_request() {
         .expect("Failed to send body");
 
     println!("CRS Clean POST - Decision: {:?}", response.decision);
-    assert!(is_allow(&response.decision), "CRS should allow clean POST request");
+    assert!(
+        is_allow(&response.decision),
+        "CRS should allow clean POST request"
+    );
 }
 
 // ============================================================================
@@ -733,7 +768,10 @@ async fn test_crs_detect_only_mode() {
     println!("CRS Detect-Only - Decision: {:?}", response.decision);
 
     // Should allow but with detection header
-    assert!(is_allow(&response.decision), "Detect-only mode should allow request");
+    assert!(
+        is_allow(&response.decision),
+        "Detect-only mode should allow request"
+    );
 
     let has_detection = response.request_headers.iter().any(|h| match h {
         sentinel_agent_protocol::HeaderOp::Set { name, .. } => name == "X-WAF-Detected",
