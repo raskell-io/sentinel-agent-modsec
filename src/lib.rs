@@ -154,7 +154,6 @@ struct PendingTransaction {
 pub struct ModSecAgent {
     engine: Arc<RwLock<ModSecEngine>>,
     pending_requests: Arc<RwLock<HashMap<String, PendingTransaction>>>,
-    pending_response_bodies: Arc<RwLock<HashMap<String, BodyAccumulator>>>,
 }
 
 impl ModSecAgent {
@@ -163,7 +162,6 @@ impl ModSecAgent {
         Ok(Self {
             engine: Arc::new(RwLock::new(engine)),
             pending_requests: Arc::new(RwLock::new(HashMap::new())),
-            pending_response_bodies: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
