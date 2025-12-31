@@ -31,7 +31,10 @@ tokio = { version = "1.40", features = ["full"] }
 async-trait = "0.1"
 
 # ModSecurity bindings
-modsecurity-rs = "0.1"
+modsecurity = "1.0"
+
+# File globbing for rule paths
+glob = "0.3"
 
 # Base64 decoding for body chunks
 base64 = "0.22"

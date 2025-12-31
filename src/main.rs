@@ -7,8 +7,8 @@ use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
 
-use sentinel_agent_protocol::AgentServer;
 use sentinel_agent_modsec::{ModSecAgent, ModSecConfig};
+use sentinel_agent_protocol::AgentServer;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -16,7 +16,11 @@ use sentinel_agent_modsec::{ModSecAgent, ModSecConfig};
 #[command(about = "ModSecurity WAF agent for Sentinel reverse proxy - full OWASP CRS support")]
 struct Args {
     /// Path to Unix socket
-    #[arg(long, default_value = "/tmp/sentinel-modsec.sock", env = "AGENT_SOCKET")]
+    #[arg(
+        long,
+        default_value = "/tmp/sentinel-modsec.sock",
+        env = "AGENT_SOCKET"
+    )]
     socket: PathBuf,
 
     /// Paths to ModSecurity rule files (can be specified multiple times)
@@ -99,7 +103,9 @@ async fn main() -> Result<()> {
 
     if config.rules_paths.is_empty() {
         tracing::warn!("No rules paths configured - ModSecurity will not block any requests");
-        tracing::warn!("Use --rules to specify rule files, e.g.: --rules /etc/modsecurity/crs/rules/*.conf");
+        tracing::warn!(
+            "Use --rules to specify rule files, e.g.: --rules /etc/modsecurity/crs/rules/*.conf"
+        );
     }
 
     // Create agent

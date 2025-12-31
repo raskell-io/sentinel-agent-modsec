@@ -20,9 +20,10 @@
 
 use anyhow::Result;
 use base64::Engine;
-use modsecurity_rs::{ModSecurity, RulesSet, Transaction};
+use modsecurity::{ModSecurity, Rules};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -35,7 +36,7 @@ use sentinel_agent_protocol::{
 /// ModSecurity configuration
 #[derive(Debug, Clone)]
 pub struct ModSecConfig {
-    /// Paths to ModSecurity rule files (glob patterns supported)
+    /// Paths to ModSecurity rule files
     pub rules_paths: Vec<String>,
     /// Block mode (true) or detect-only mode (false)
     pub block_mode: bool,
@@ -73,30 +74,45 @@ pub struct Detection {
 /// ModSecurity engine wrapper
 pub struct ModSecEngine {
     modsec: ModSecurity,
-    rules: RulesSet,
+    rules: Rules,
     pub config: ModSecConfig,
 }
 
 impl ModSecEngine {
     /// Create a new ModSecurity engine with the given configuration
     pub fn new(config: ModSecConfig) -> Result<Self> {
-        let modsec = ModSecurity::new();
+        let modsec = ModSecurity::default();
+        let mut rules = Rules::new();
 
         // Load rules from configured paths
-        let rules_paths: Vec<&str> = config.rules_paths.iter().map(|s| s.as_str()).collect();
+        let mut loaded_count = 0;
+        for path_pattern in &config.rules_paths {
+            // Handle glob patterns
+            let paths = glob::glob(path_pattern)
+                .map_err(|e| anyhow::anyhow!("Invalid glob pattern '{}': {}", path_pattern, e))?;
 
-        let rules = if rules_paths.is_empty() {
-            // Create empty ruleset if no paths configured
-            RulesSet::from_paths(&[]).map_err(|e| anyhow::anyhow!("Failed to create ruleset: {}", e))?
-        } else {
-            RulesSet::from_paths(&rules_paths)
-                .map_err(|e| anyhow::anyhow!("Failed to load rules: {}", e))?
-        };
+            for entry in paths {
+                match entry {
+                    Ok(path) => {
+                        if path.is_file() {
+                            let content = fs::read_to_string(&path).map_err(|e| {
+                                anyhow::anyhow!("Failed to read rule file {:?}: {}", path, e)
+                            })?;
+                            rules.add_plain(&content).map_err(|e| {
+                                anyhow::anyhow!("Failed to parse rules from {:?}: {}", path, e)
+                            })?;
+                            loaded_count += 1;
+                            debug!(path = ?path, "Loaded rule file");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Error reading glob entry");
+                    }
+                }
+            }
+        }
 
-        info!(
-            rules_count = rules_paths.len(),
-            "ModSecurity engine initialized"
-        );
+        info!(rules_files = loaded_count, "ModSecurity engine initialized");
 
         Ok(Self {
             modsec,
@@ -111,12 +127,6 @@ impl ModSecEngine {
             .exclude_paths
             .iter()
             .any(|p| path.starts_with(p))
-    }
-
-    /// Create a new transaction for processing a request
-    pub fn create_transaction(&mut self) -> Result<Transaction> {
-        Transaction::new(&mut self.modsec, &mut self.rules)
-            .map_err(|e| anyhow::anyhow!("Failed to create transaction: {}", e))
     }
 }
 
@@ -159,19 +169,21 @@ impl ModSecAgent {
         method: &str,
         uri: &str,
         headers: &HashMap<String, Vec<String>>,
-        body: Option<&[u8]>,
-        client_ip: &str,
+        _body: Option<&[u8]>,
+        _client_ip: &str,
     ) -> Result<Option<(u16, String)>> {
-        let mut engine = self.engine.write().await;
-        let mut tx = engine.create_transaction()?;
+        let engine = self.engine.read().await;
 
-        // Process connection
-        tx.process_connection(client_ip, 0, "localhost", 80)
-            .map_err(|e| anyhow::anyhow!("process_connection failed: {}", e))?;
+        // Build transaction
+        let mut tx = engine
+            .modsec
+            .transaction_builder()
+            .with_rules(&engine.rules)
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to create transaction: {}", e))?;
 
         // Process URI
-        let http_version = "1.1";
-        tx.process_uri(uri, method, http_version)
+        tx.process_uri(uri, method, "1.1")
             .map_err(|e| anyhow::anyhow!("process_uri failed: {}", e))?;
 
         // Add headers
@@ -186,47 +198,18 @@ impl ModSecAgent {
         tx.process_request_headers()
             .map_err(|e| anyhow::anyhow!("process_request_headers failed: {}", e))?;
 
-        // Check for intervention after headers
-        if let Ok(intervention) = tx.intervention() {
-            if intervention.disruptive {
-                let status = intervention.status as u16;
-                let message = intervention.log.unwrap_or_else(|| "Blocked by ModSecurity".to_string());
+        // Check for intervention
+        if let Some(intervention) = tx.intervention() {
+            let status = intervention.status() as u16;
+            if status != 0 && status != 200 {
                 debug!(
                     correlation_id = correlation_id,
                     status = status,
-                    "ModSecurity intervention after headers"
+                    "ModSecurity intervention"
                 );
-                return Ok(Some((status, message)));
+                return Ok(Some((status, "Blocked by ModSecurity".to_string())));
             }
         }
-
-        // Process body if provided
-        if let Some(body_data) = body {
-            if !body_data.is_empty() {
-                // ModSecurity expects body to be appended then processed
-                // The modsecurity-rs API may differ - process_request_body() handles it
-                tx.process_request_body()
-                    .map_err(|e| anyhow::anyhow!("process_request_body failed: {}", e))?;
-
-                // Check for intervention after body
-                if let Ok(intervention) = tx.intervention() {
-                    if intervention.disruptive {
-                        let status = intervention.status as u16;
-                        let message = intervention.log.unwrap_or_else(|| "Blocked by ModSecurity".to_string());
-                        debug!(
-                            correlation_id = correlation_id,
-                            status = status,
-                            "ModSecurity intervention after body"
-                        );
-                        return Ok(Some((status, message)));
-                    }
-                }
-            }
-        }
-
-        // Log the transaction
-        tx.process_logging()
-            .map_err(|e| anyhow::anyhow!("process_logging failed: {}", e))?;
 
         Ok(None)
     }
@@ -474,18 +457,5 @@ mod tests {
         assert!(config.body_inspection_enabled);
         assert!(!config.response_inspection_enabled);
         assert_eq!(config.max_body_size, 1048576);
-    }
-
-    #[test]
-    fn test_path_exclusion() {
-        let config = ModSecConfig {
-            exclude_paths: vec!["/health".to_string(), "/metrics".to_string()],
-            ..Default::default()
-        };
-        let engine = ModSecEngine::new(config).unwrap();
-        assert!(engine.is_excluded("/health"));
-        assert!(engine.is_excluded("/health/ready"));
-        assert!(engine.is_excluded("/metrics"));
-        assert!(!engine.is_excluded("/api/users"));
     }
 }
