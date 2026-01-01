@@ -29,7 +29,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use sentinel_agent_protocol::{
-    AgentHandler, AgentResponse, AuditMetadata, HeaderOp, RequestBodyChunkEvent,
+    AgentHandler, AgentResponse, AuditMetadata, ConfigureEvent, HeaderOp, RequestBodyChunkEvent,
     RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent,
 };
 
@@ -59,6 +59,58 @@ impl Default for ModSecConfig {
             body_inspection_enabled: true,
             max_body_size: 1048576, // 1MB
             response_inspection_enabled: false,
+        }
+    }
+}
+
+/// JSON-serializable configuration for ModSecurity agent
+///
+/// Used for parsing configuration from the proxy's agent config.
+/// Field names use kebab-case to match YAML/JSON config conventions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ModSecConfigJson {
+    /// Paths to ModSecurity rule files (glob patterns supported)
+    #[serde(default)]
+    pub rules_paths: Vec<String>,
+    /// Block mode (true) or detect-only mode (false)
+    #[serde(default = "default_block_mode")]
+    pub block_mode: bool,
+    /// Paths to exclude from inspection
+    #[serde(default)]
+    pub exclude_paths: Vec<String>,
+    /// Enable request body inspection
+    #[serde(default = "default_body_inspection")]
+    pub body_inspection_enabled: bool,
+    /// Maximum body size to inspect in bytes
+    #[serde(default = "default_max_body_size")]
+    pub max_body_size: usize,
+    /// Enable response body inspection
+    #[serde(default)]
+    pub response_inspection_enabled: bool,
+}
+
+fn default_block_mode() -> bool {
+    true
+}
+
+fn default_body_inspection() -> bool {
+    true
+}
+
+fn default_max_body_size() -> usize {
+    1048576 // 1MB
+}
+
+impl From<ModSecConfigJson> for ModSecConfig {
+    fn from(json: ModSecConfigJson) -> Self {
+        Self {
+            rules_paths: json.rules_paths,
+            block_mode: json.block_mode,
+            exclude_paths: json.exclude_paths,
+            body_inspection_enabled: json.body_inspection_enabled,
+            max_body_size: json.max_body_size,
+            response_inspection_enabled: json.response_inspection_enabled,
         }
     }
 }
@@ -165,6 +217,22 @@ impl ModSecAgent {
         })
     }
 
+    /// Reconfigure the agent with new settings
+    ///
+    /// This rebuilds the ModSecurity engine with the new configuration.
+    /// In-flight requests using the old engine will complete normally.
+    pub async fn reconfigure(&self, config: ModSecConfig) -> Result<()> {
+        info!("Reconfiguring ModSecurity engine");
+        let new_engine = ModSecEngine::new(config)?;
+        let mut engine = self.engine.write().await;
+        *engine = new_engine;
+        // Clear pending requests since rules may have changed
+        let mut pending = self.pending_requests.write().await;
+        pending.clear();
+        info!("ModSecurity engine reconfigured successfully");
+        Ok(())
+    }
+
     /// Process a complete request through ModSecurity
     async fn process_request(
         &self,
@@ -243,6 +311,31 @@ impl ModSecAgent {
 
 #[async_trait::async_trait]
 impl AgentHandler for ModSecAgent {
+    async fn on_configure(&self, event: ConfigureEvent) -> AgentResponse {
+        debug!(agent_id = %event.agent_id, "Received configure event");
+
+        // Parse the JSON config into ModSecConfigJson
+        let config_json: ModSecConfigJson = match serde_json::from_value(event.config) {
+            Ok(config) => config,
+            Err(e) => {
+                warn!(error = %e, "Failed to parse ModSecurity configuration");
+                // Return allow but log the error - agent can still work with existing config
+                return AgentResponse::default_allow();
+            }
+        };
+
+        // Convert to internal config and reconfigure the engine
+        let config: ModSecConfig = config_json.into();
+        if let Err(e) = self.reconfigure(config).await {
+            warn!(error = %e, "Failed to reconfigure ModSecurity engine");
+            // Return allow but log the error
+            return AgentResponse::default_allow();
+        }
+
+        info!(agent_id = %event.agent_id, "ModSecurity agent configured successfully");
+        AgentResponse::default_allow()
+    }
+
     async fn on_request_headers(&self, event: RequestHeadersEvent) -> AgentResponse {
         let path = &event.uri;
         let correlation_id = &event.metadata.correlation_id;
