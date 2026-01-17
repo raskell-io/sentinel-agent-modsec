@@ -30,7 +30,11 @@ use tracing::{debug, info, warn};
 
 use sentinel_agent_protocol::{
     AgentHandler, AgentResponse, AuditMetadata, ConfigureEvent, HeaderOp, RequestBodyChunkEvent,
-    RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent,
+    RequestHeadersEvent, ResponseBodyChunkEvent, ResponseHeadersEvent, EventType,
+    v2::{
+        AgentCapabilities, AgentFeatures, AgentHandlerV2, AgentLimits, DrainReason,
+        HealthStatus, MetricsReport, ShutdownReason,
+    },
 };
 
 /// ModSecurity configuration
@@ -310,17 +314,47 @@ impl ModSecAgent {
 }
 
 #[async_trait::async_trait]
-impl AgentHandler for ModSecAgent {
-    async fn on_configure(&self, event: ConfigureEvent) -> AgentResponse {
-        debug!(agent_id = %event.agent_id, "Received configure event");
+impl AgentHandlerV2 for ModSecAgent {
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities::new(
+            "sentinel-modsec-agent",
+            "ModSecurity WAF Agent",
+            env!("CARGO_PKG_VERSION"),
+        )
+        .with_event(EventType::RequestHeaders)
+        .with_event(EventType::RequestBodyChunk)
+        .with_event(EventType::ResponseHeaders)
+        .with_event(EventType::ResponseBodyChunk)
+        .with_features(AgentFeatures {
+            streaming_body: true,
+            websocket: false,
+            guardrails: false,
+            config_push: true,
+            metrics_export: true,
+            concurrent_requests: 100,
+            cancellation: true,
+            flow_control: false,
+            health_reporting: true,
+        })
+        .with_limits(AgentLimits {
+            max_body_size: 10 * 1024 * 1024, // 10MB
+            max_concurrency: 100,
+            preferred_chunk_size: 64 * 1024,
+            max_memory: None,
+            max_processing_time_ms: Some(5000),
+        })
+    }
+
+    async fn on_configure(&self, config: serde_json::Value, version: Option<String>) -> bool {
+        debug!(version = ?version, "Received configure event");
 
         // Parse the JSON config into ModSecConfigJson
-        let config_json: ModSecConfigJson = match serde_json::from_value(event.config) {
+        let config_json: ModSecConfigJson = match serde_json::from_value(config) {
             Ok(config) => config,
             Err(e) => {
                 warn!(error = %e, "Failed to parse ModSecurity configuration");
-                // Return allow but log the error - agent can still work with existing config
-                return AgentResponse::default_allow();
+                // Return false to indicate configuration was not accepted
+                return false;
             }
         };
 
@@ -328,12 +362,43 @@ impl AgentHandler for ModSecAgent {
         let config: ModSecConfig = config_json.into();
         if let Err(e) = self.reconfigure(config).await {
             warn!(error = %e, "Failed to reconfigure ModSecurity engine");
-            // Return allow but log the error
-            return AgentResponse::default_allow();
+            return false;
         }
 
-        info!(agent_id = %event.agent_id, "ModSecurity agent configured successfully");
-        AgentResponse::default_allow()
+        info!(version = ?version, "ModSecurity agent configured successfully");
+        true
+    }
+
+    fn health_status(&self) -> HealthStatus {
+        // Return healthy status with agent ID
+        HealthStatus::healthy("sentinel-modsec-agent")
+    }
+
+    fn metrics_report(&self) -> Option<MetricsReport> {
+        // Basic metrics report - can be extended to include more detailed metrics
+        Some(MetricsReport::new("sentinel-modsec-agent", 10_000))
+    }
+
+    async fn on_shutdown(&self, reason: ShutdownReason, grace_period_ms: u64) {
+        info!(
+            reason = ?reason,
+            grace_period_ms = grace_period_ms,
+            "ModSecurity agent shutting down"
+        );
+        // Clear pending requests on shutdown
+        let mut pending = self.pending_requests.write().await;
+        pending.clear();
+    }
+
+    async fn on_drain(&self, duration_ms: u64, reason: DrainReason) {
+        info!(
+            reason = ?reason,
+            duration_ms = duration_ms,
+            "ModSecurity agent draining"
+        );
+        // Stop accepting new requests - clear pending to signal draining
+        let mut pending = self.pending_requests.write().await;
+        pending.clear();
     }
 
     async fn on_request_headers(&self, event: RequestHeadersEvent) -> AgentResponse {
@@ -558,6 +623,41 @@ impl AgentHandler for ModSecAgent {
         // ModSecurity can inspect response bodies but the API is more complex
         let _ = event;
         AgentResponse::default_allow()
+    }
+}
+
+/// v1 AgentHandler implementation for backward compatibility with UDS transport.
+///
+/// This delegates to the v2 implementation methods for the core event handling,
+/// allowing the agent to work with both v1 (UDS) and v2 (gRPC) servers.
+#[async_trait::async_trait]
+impl AgentHandler for ModSecAgent {
+    async fn on_configure(&self, event: ConfigureEvent) -> AgentResponse {
+        // Delegate to v2 configure, converting result to AgentResponse
+        let accepted = <Self as AgentHandlerV2>::on_configure(self, event.config, None).await;
+        if accepted {
+            AgentResponse::default_allow()
+        } else {
+            // v1 doesn't have a way to signal config rejection, so just return allow
+            // but the warning is logged in the v2 method
+            AgentResponse::default_allow()
+        }
+    }
+
+    async fn on_request_headers(&self, event: RequestHeadersEvent) -> AgentResponse {
+        <Self as AgentHandlerV2>::on_request_headers(self, event).await
+    }
+
+    async fn on_request_body_chunk(&self, event: RequestBodyChunkEvent) -> AgentResponse {
+        <Self as AgentHandlerV2>::on_request_body_chunk(self, event).await
+    }
+
+    async fn on_response_headers(&self, event: ResponseHeadersEvent) -> AgentResponse {
+        <Self as AgentHandlerV2>::on_response_headers(self, event).await
+    }
+
+    async fn on_response_body_chunk(&self, event: ResponseBodyChunkEvent) -> AgentResponse {
+        <Self as AgentHandlerV2>::on_response_body_chunk(self, event).await
     }
 }
 

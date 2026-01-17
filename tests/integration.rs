@@ -127,6 +127,7 @@ fn make_metadata() -> RequestMetadata {
         route_id: Some("default".to_string()),
         upstream_id: None,
         timestamp: "2025-01-01T00:00:00Z".to_string(),
+        traceparent: None,
     }
 }
 
