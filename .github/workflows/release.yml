@@ -5,6 +5,7 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    # Trigger manual builds
     inputs:
       version:
         description: 'Version to release (e.g., 0.2.0)'
